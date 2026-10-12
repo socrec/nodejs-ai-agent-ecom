@@ -1,4 +1,4 @@
-// npm run rag:ingest — knowledge/<org>/*.md (+ generated products.md) → chunks → embeddings → knowledge_chunks
+// npm run rag:ingest reads knowledge/<org>/*.md (+ generated products.md) → chunks → embeddings → knowledge_chunks
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { withTenant } from "../db/client.ts";
 import { knowledgeChunks, orgs, products } from "../db/schema.ts";
@@ -13,7 +13,7 @@ for (const orgId of readdirSync(root)) {
   if (!org) { console.warn(`skip ${orgId}: no org row`); continue; }
 
   const rows = await withTenant(orgId, (tx) => tx.select().from(products).orderBy(products.id));
-  const productsMd = [`# Products — ${org.name}`, ...rows.map((p) =>
+  const productsMd = [`# ${org.name}: products`, ...rows.map((p) =>
     `## ${p.name} ($${(p.priceCents / 100).toFixed(2)})\n${p.description} Category: ${p.category}. SKU ${p.sku}. ${p.stock > 0 ? "In stock." : "Out of stock."}`)].join("\n\n");
   writeFileSync(new URL("products.md", dir), productsMd);
 

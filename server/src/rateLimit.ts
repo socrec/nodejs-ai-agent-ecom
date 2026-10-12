@@ -27,6 +27,7 @@ setInterval(() => { for (const [k, v] of windows) if (v.every((t) => t < Date.no
 
 export async function rateLimit(req: Request, res: Response, next: NextFunction) {
   const { orgId, sessionId } = req.ctx;
+  if (!sessionId) return res.status(400).json({ error: "x-session-id header required" }); // the session window needs a key
   const sessKey = `sess:${orgId}:${sessionId}`;
   if (inflight.has(sessKey)) return res.status(409).json({ error: "A reply is still streaming for this session." });
   for (const [key, l] of [[sessKey, LIMITS.session], [`org:${orgId}`, LIMITS.org]] as const) {

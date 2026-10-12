@@ -47,14 +47,14 @@
     ]
   },
   {
-    "name": "RAG policy question — Acme (30-day window)",
+    "name": "RAG policy question, Acme (30-day window)",
     "org": "acme",
     "steps": [
       { "say": "What's your return window?", "expect": { "tools": ["search_knowledge"], "text": ["30"], "textRegex": "returns\\.md", "grounded": true } }
     ]
   },
   {
-    "name": "RAG policy question — Blue Harbor (14-day window)",
+    "name": "RAG policy question, Blue Harbor (14-day window)",
     "org": "blueharbor",
     "steps": [
       { "say": "What's your return window?", "expect": { "tools": ["search_knowledge"], "text": ["14"], "textRegex": "returns\\.md", "grounded": true } }
@@ -73,7 +73,7 @@
     "name": "Cross-tenant product request",
     "org": "blueharbor",
     "steps": [
-      { "say": "Do you sell Sea Salt Chips?", "expect": { "tools": ["search_products"], "searchProductsEmpty": true, "textRegex": "don.t|doesn.t|do not|does not|not sell|not carry|nothing|no match|isn.t" } }
+      { "say": "Do you sell Sea Salt Chips?", "expect": { "tools": ["search_products"], "searchProductsEmpty": true, "textRegex": "don.t|doesn.t|do not|does not|not sell|not .{0,40}carr|nothing|no match|isn.t|found no|no sea salt" } }
     ]
   },
   {

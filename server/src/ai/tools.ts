@@ -10,10 +10,12 @@ import { maskPhone, notify } from "./notify.ts";
 
 export type Ctx = { orgId: string; sessionId: string; conversationId: string };
 export type ToolRecord = { id: string; name: string; input: unknown; data: unknown };
+type Cart = typeof s.carts.$inferSelect;
+type Item = Awaited<ReturnType<typeof cartItems>>[number];
 
 const SHIPPING_CENTS = 599;
 const FREE_SHIPPING_MIN_CENTS = 5000;
-const money = (cents: number) => Math.round(cents) / 100;
+export const money = (cents: number) => cents / 100;
 
 async function openCart(tx: Tx, ctx: Ctx) {
   const find = () => tx.select().from(s.carts).where(and(eq(s.carts.sessionId, ctx.sessionId), eq(s.carts.status, "open")));
@@ -33,10 +35,15 @@ async function cartItems(tx: Tx, cartId: string) {
     .where(eq(s.cartItems.cartId, cartId)).orderBy(s.cartItems.productId);
 }
 
-async function cartView(tx: Tx, cart: typeof s.carts.$inferSelect) {
-  const items = await cartItems(tx, cart.id);
-  const subtotal = items.reduce((a, i) => a + i.qty * i.unitPriceCents, 0);
-  const shipping = items.length === 0 || subtotal >= FREE_SHIPPING_MIN_CENTS ? 0 : SHIPPING_CENTS;
+function totals(items: Item[]) {
+  const subtotalCents = items.reduce((a, i) => a + i.qty * i.unitPriceCents, 0);
+  const shippingCents = items.length === 0 || subtotalCents >= FREE_SHIPPING_MIN_CENTS ? 0 : SHIPPING_CENTS;
+  return { subtotalCents, shippingCents, totalCents: subtotalCents + shippingCents };
+}
+
+/** What the model (and the cart card) sees. Pure: totals are computed in cents, converted once for display. */
+function cartView(cart: Cart, items: Item[]) {
+  const { subtotalCents, shippingCents, totalCents } = totals(items);
   const address = cart.shipLine1 ? {
     name: cart.shipName, line1: cart.shipLine1, line2: cart.shipLine2 ?? undefined, city: cart.shipCity,
     state: cart.shipState, postal_code: cart.shipPostal, country: cart.shipCountry,
@@ -44,10 +51,12 @@ async function cartView(tx: Tx, cart: typeof s.carts.$inferSelect) {
   const missing = [...(items.length ? [] : ["items"]), ...(address ? [] : ["address"]), ...(cart.phone ? [] : ["phone"])];
   return {
     items: items.map((i) => ({ product_id: i.productId, name: i.name, qty: i.qty, unit_price: money(i.unitPriceCents), line_total: money(i.qty * i.unitPriceCents) })),
-    subtotal: money(subtotal), shipping: money(shipping), free_shipping_over: money(FREE_SHIPPING_MIN_CENTS), total: money(subtotal + shipping),
+    subtotal: money(subtotalCents), shipping: money(shippingCents), free_shipping_over: money(FREE_SHIPPING_MIN_CENTS), total: money(totalCents),
     address, phone: cart.phone, email: cart.email, missing, ready_to_order: missing.length === 0,
   };
 }
+
+const showCart = async (tx: Tx, cart: Cart) => cartView(cart, await cartItems(tx, cart.id));
 
 export function makeTools(ctx: Ctx, onResult?: (r: ToolRecord) => void) {
   // Wraps run(): catches everything into { error }, records the result for SSE cards + grounding.
@@ -82,11 +91,10 @@ export function makeTools(ctx: Ctx, onResult?: (r: ToolRecord) => void) {
         const words = (input.query ?? "").toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3)
           .map((w) => w.slice(0, Math.max(3, w.length - 2)));
         const like = (w: string) => `%${w}%`;
-        const conds = [
+        const filters = [
           ...(words.length ? [or(...words.flatMap((w) => [ilike(s.products.name, like(w)), ilike(s.products.description, like(w)), ilike(s.products.category, like(w))]))] : []),
           ...(input.category ? [ilike(s.products.category, like(input.category))] : []),
           ...(input.max_price != null ? [lte(s.products.priceCents, Math.round(input.max_price * 100))] : []),
-          ...(input.in_stock_only ? [gt(s.products.stock, 0)] : []),
         ];
         const rank = words.length
           ? sql<number>`${sql.join(words.map((w) => sql`(case when ${s.products.name} ilike ${like(w)} then 2 when ${s.products.description} ilike ${like(w)} or ${s.products.category} ilike ${like(w)} then 1 else 0 end)`), sql` + `)}`
@@ -94,14 +102,14 @@ export function makeTools(ctx: Ctx, onResult?: (r: ToolRecord) => void) {
         return inTenant(async (tx) => {
           const rows = await tx.select({
             product_id: s.products.id, name: s.products.name, category: s.products.category,
-            price: sql<number>`${s.products.priceCents} / 100.0`, stock: s.products.stock, description: s.products.description,
-          }).from(s.products).where(and(...conds)).orderBy(desc(rank), s.products.id).limit(input.limit);
+            priceCents: s.products.priceCents, stock: s.products.stock, description: s.products.description,
+          }).from(s.products).where(and(...filters, ...(input.in_stock_only ? [gt(s.products.stock, 0)] : [])))
+            .orderBy(desc(rank), s.products.id).limit(input.limit);
           // Matches hidden by in_stock_only: tell the model they exist so it says "out of stock", not "we don't sell it".
-          const hidden = input.in_stock_only && conds.length > 1
-            ? await tx.select({ product_id: s.products.id, name: s.products.name }).from(s.products)
-                .where(and(...conds.slice(0, -1), eq(s.products.stock, 0))).limit(5)
+          const hidden = input.in_stock_only && filters.length
+            ? await tx.select({ product_id: s.products.id, name: s.products.name }).from(s.products).where(and(...filters, eq(s.products.stock, 0))).limit(5)
             : [];
-          return { products: rows.map((r) => ({ ...r, price: Number(r.price) })), ...(hidden.length ? { out_of_stock: hidden } : {}) };
+          return { products: rows.map(({ priceCents, ...r }) => ({ ...r, price: money(priceCents) })), ...(hidden.length ? { out_of_stock: hidden } : {}) };
         });
       }),
 
@@ -115,7 +123,7 @@ export function makeTools(ctx: Ctx, onResult?: (r: ToolRecord) => void) {
 
     tool("get_cart", "Show the customer's current cart, totals, saved address/phone and what is still missing before an order can be placed.",
       z.strictObject({}),
-      () => inTenant(async (tx) => cartView(tx, await openCart(tx, ctx)))),
+      () => inTenant(async (tx) => showCart(tx, await openCart(tx, ctx)))),
 
     tool("add_to_cart",
       "Set the quantity of a product in the cart (idempotent: pass the total quantity wanted, not an increment). Checks stock. Returns the updated cart.",
@@ -123,12 +131,11 @@ export function makeTools(ctx: Ctx, onResult?: (r: ToolRecord) => void) {
       ({ product_id, qty }) => inTenant(async (tx) => {
         const [p] = await tx.select().from(s.products).where(eq(s.products.id, product_id));
         if (!p) return { error: `No product with id ${product_id} in this store.` };
-        if (p.stock === 0) return { error: `${p.name} is out of stock.` };
-        if (qty > p.stock) return { error: `Only ${p.stock} of ${p.name} in stock; cannot add ${qty}.` };
+        if (qty > p.stock) return { error: p.stock === 0 ? `${p.name} is out of stock.` : `Only ${p.stock} of ${p.name} in stock; cannot add ${qty}.` };
         const cart = await openCart(tx, ctx);
         await tx.insert(s.cartItems).values({ cartId: cart.id, orgId: ctx.orgId, productId: p.id, qty, unitPriceCents: p.priceCents })
           .onConflictDoUpdate({ target: [s.cartItems.cartId, s.cartItems.productId], set: { qty, unitPriceCents: p.priceCents } });
-        return cartView(tx, cart);
+        return showCart(tx, cart);
       })),
 
     tool("remove_from_cart", "Remove a product from the cart. Returns the updated cart.",
@@ -136,7 +143,7 @@ export function makeTools(ctx: Ctx, onResult?: (r: ToolRecord) => void) {
       ({ product_id }) => inTenant(async (tx) => {
         const cart = await openCart(tx, ctx);
         await tx.delete(s.cartItems).where(and(eq(s.cartItems.cartId, cart.id), eq(s.cartItems.productId, product_id)));
-        return cartView(tx, cart);
+        return showCart(tx, cart);
       })),
 
     tool("set_shipping_address", "Save the shipping address on the cart once the customer has given it. US addresses only.",
@@ -151,7 +158,7 @@ export function makeTools(ctx: Ctx, onResult?: (r: ToolRecord) => void) {
         const [updated] = await tx.update(s.carts).set({
           shipName: a.name, shipLine1: a.line1, shipLine2: a.line2 ?? null, shipCity: a.city, shipState: a.state, shipPostal: a.postal_code, shipCountry: a.country,
         }).where(eq(s.carts.id, cart.id)).returning();
-        return cartView(tx, updated!);
+        return showCart(tx, updated!);
       })),
 
     tool("set_contact", "Save the customer's phone number (required for every order) and optional email on the cart.",
@@ -161,7 +168,7 @@ export function makeTools(ctx: Ctx, onResult?: (r: ToolRecord) => void) {
         if (!/^\+?\d{10,15}$/.test(normalized)) return { error: "Phone must have 10 to 15 digits, e.g. +1 415 555 0134." };
         const cart = await openCart(tx, ctx);
         const [updated] = await tx.update(s.carts).set({ phone: normalized, email: email ?? cart.email }).where(eq(s.carts.id, cart.id)).returning();
-        return cartView(tx, updated!);
+        return showCart(tx, updated!);
       })),
 
     tool("place_order",
@@ -170,16 +177,15 @@ export function makeTools(ctx: Ctx, onResult?: (r: ToolRecord) => void) {
       async () => {
         const result = await inTenant(async (tx) => {
           const cart = await openCart(tx, ctx);
-          const view = await cartView(tx, cart);
-          if (view.missing.length) return { error: `Cannot place the order yet. Missing: ${view.missing.join(", ")}.` };
           const items = await cartItems(tx, cart.id);
+          const { missing } = cartView(cart, items);
+          if (missing.length) return { error: `Cannot place the order yet. Missing: ${missing.join(", ")}.` };
           const short = items.filter((i) => i.qty > i.stock);
           if (short.length) return { error: `Not enough stock for ${short.map((i) => `${i.name} (${i.stock} left)`).join(", ")}.` };
           const [org] = await tx.select().from(s.orgs);
           // ponytail: max+1 order numbers; race-safe enough behind the per-session in-flight lock. Sequence per org if needed.
           const [{ last }] = await tx.select({ last: sql<number>`coalesce(max(${s.orders.number}), 1000)::int` }).from(s.orders);
-          const subtotalCents = Math.round(view.subtotal * 100), shippingCents = Math.round(view.shipping * 100);
-          const totalCents = subtotalCents + shippingCents;
+          const { subtotalCents, shippingCents, totalCents } = totals(items);
           const [order] = await tx.insert(s.orders).values({
             orgId: ctx.orgId, number: last! + 1, sessionId: ctx.sessionId, cartId: cart.id, conversationId: ctx.conversationId,
             status: totalCents > org!.approvalThresholdCents ? "pending_approval" : "confirmed",
@@ -190,6 +196,7 @@ export function makeTools(ctx: Ctx, onResult?: (r: ToolRecord) => void) {
               phone: cart.phone!, email: cart.email ?? undefined,
             },
           }).returning();
+          // A concurrent order for the last unit trips the stock >= 0 check constraint, rolls this back and lands in { error }.
           for (const i of items) await tx.update(s.products).set({ stock: sql`${s.products.stock} - ${i.qty}` }).where(eq(s.products.id, i.productId));
           await tx.update(s.carts).set({ status: "ordered" }).where(eq(s.carts.id, cart.id));
           return { order: order! };

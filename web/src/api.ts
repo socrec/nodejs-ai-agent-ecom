@@ -29,6 +29,6 @@ export type UiMessage = {
   grounding?: { ungrounded: string[] } | null; guard?: { intent: string; confidence: number } | null;
   human?: boolean; streaming?: boolean; handoff?: boolean; error?: boolean;
 };
-export type UsageSummary = { calls: number; input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number; model: string };
+export type UsageSummary = { calls: number; input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number };
 export type Product = { id: number; sku: string; name: string; category: string; description: string; price: number; stock: number };
 export type Conversation = { id: string; status: "active" | "escalated"; messages: UiMessage[]; pendingOrder: boolean };

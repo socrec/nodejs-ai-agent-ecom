@@ -1,4 +1,4 @@
--- Applied by seed.ts (admin connection) after drizzle-kit push. Idempotent.
+-- Applied by rls.ts after every drizzle-kit push (which drops these policies) and by seed.ts. Idempotent.
 grant usage on schema public to app_user;
 grant select, insert, update, delete on all tables in schema public to app_user;
 grant usage, select on all sequences in schema public to app_user;

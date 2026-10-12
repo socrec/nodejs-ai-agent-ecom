@@ -5,7 +5,7 @@ import { GUARD_MODEL, client, logUsage, type Usage } from "./client.ts";
 
 export const INTENTS = ["shopping", "support", "chitchat", "off_topic", "abuse", "prompt_injection"] as const;
 const Intent = z.object({ intent: z.enum(INTENTS), confidence: z.number().min(0).max(1) });
-export type GuardResult = z.infer<typeof Intent> & { model: string; usage: Usage; latencyMs: number };
+export type GuardResult = z.infer<typeof Intent> & { model: string; usage: Usage };
 
 const GUARD_SYSTEM = `Classify a customer's message to an online store's shopping assistant.
 shopping: products, cart, buying, order status, prices, availability.
@@ -25,10 +25,9 @@ export async function classifyIntent(orgId: string, message: string): Promise<Gu
     messages: [{ role: "user", content: message }],
     output_config: { effort: "low", format: zodOutputFormat(Intent) },
   });
-  const latencyMs = Date.now() - t0;
-  await logUsage({ orgId, feature: "guard", model: res.model, usage: res.usage, latencyMs,
+  await logUsage({ orgId, feature: "guard", model: res.model, usage: res.usage, latencyMs: Date.now() - t0,
     error: res.parsed_output ? undefined : "guard: unparseable output, failed open to shopping" });
   // Fail open: an unparseable classification goes to the agent, whose tools are the real wall.
   const parsed = res.parsed_output ?? { intent: "shopping" as const, confidence: 0 };
-  return { ...parsed, model: res.model, usage: res.usage, latencyMs };
+  return { ...parsed, model: res.model, usage: res.usage };
 }

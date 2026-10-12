@@ -1,4 +1,4 @@
-// npm run eval — scripted multi-turn scenarios against the running server (localhost:3001).
+// npm run eval: scripted multi-turn scenarios against the running server (localhost:3001).
 // Assertions check SSE events (tools called, guard intent, grounding) and the DB (orders, outbox, tickets), not prose.
 import { readFileSync } from "node:fs";
 import { and, desc, eq } from "drizzle-orm";
@@ -118,12 +118,12 @@ for (const [i, sc] of scenarios.entries()) {
   for (const step of sc.steps) {
     if ("check" in step) { await checkDb(sc.org, sessionId, conversationId, step.check, fail); continue; }
     if ("approve" in step) { await approve(sc.org, sessionId, fail); continue; }
-    let t: Awaited<ReturnType<typeof chat>> | undefined;
-    for (let r = 0; r < (step.repeat ?? 1); r++) t = await chat(sc.org, sessionId, conversationId, step.say);
-    conversationId = t!.conversationId;
-    turns++; cost += t!.usage?.costUsd ?? 0;
-    if (t!.grounding && (t!.usage?.calls ?? 0) > 1) { groundedTotal++; if (t!.grounding.ungrounded.length === 0) groundedOk++; }
-    if (step.expect) { const before = notes.length; checkTurn(t!, step.expect, fail); if (notes.length > before) notes.push(`  ↳ "${t!.text.slice(0, 140).replace(/\n/g, " ")}"`); }
+    let t = await chat(sc.org, sessionId, conversationId, step.say);
+    for (let r = 1; r < (step.repeat ?? 1); r++) t = await chat(sc.org, sessionId, conversationId, step.say);
+    conversationId = t.conversationId;
+    turns++; cost += t.usage?.costUsd ?? 0;
+    if (t.grounding && (t.usage?.calls ?? 0) > 1) { groundedTotal++; if (t.grounding.ungrounded.length === 0) groundedOk++; }
+    if (step.expect) { const before = notes.length; checkTurn(t, step.expect, fail); if (notes.length > before) notes.push(`  ↳ "${t.text.slice(0, 140).replace(/\n/g, " ")}"`); }
     process.stdout.write(".");
   }
   const pass = notes.length === 0;
@@ -132,7 +132,7 @@ for (const [i, sc] of scenarios.entries()) {
 }
 
 console.log("\n| # | Scenario | Result | Turns | Grounded | Cost | Notes |\n|---|---|---|---|---|---|---|");
-for (const r of rows) console.log(`| ${r.n} | ${r.name} | ${r.pass ? "PASS" : "FAIL"} | ${r.turns} | ${r.grounded[1] ? `${r.grounded[0]}/${r.grounded[1]}` : "–"} | $${r.cost.toFixed(4)} | ${r.notes.join("; ")} |`);
+for (const r of rows) console.log(`| ${r.n} | ${r.name} | ${r.pass ? "PASS" : "FAIL"} | ${r.turns} | ${r.grounded[1] ? `${r.grounded[0]}/${r.grounded[1]}` : "-"} | $${r.cost.toFixed(4)} | ${r.notes.join("; ")} |`);
 const passed = rows.filter((r) => r.pass).length;
 const g = rows.reduce((a, r) => [a[0] + r.grounded[0], a[1] + r.grounded[1]], [0, 0]);
 console.log(`\n${passed}/${rows.length} passed (${Math.round(100 * passed / rows.length)}%) · grounded ${g[0]}/${g[1]} agent turns · total $${rows.reduce((a, r) => a + r.cost, 0).toFixed(4)}`);

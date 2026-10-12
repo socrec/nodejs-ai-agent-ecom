@@ -1,4 +1,4 @@
-# Returns and refunds — Blue Harbor Beverages
+# Blue Harbor Beverages: returns and refunds
 
 ## Return window
 Unopened cases may be returned within 14 days of delivery for a refund to the original payment method, less a $9.99 return shipping fee.

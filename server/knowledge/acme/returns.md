@@ -1,4 +1,4 @@
-# Returns and refunds — Acme Snacks
+# Acme Snacks: returns and refunds
 
 ## Return window
 You may return unopened products within 30 days of delivery for a full refund to your original payment method.

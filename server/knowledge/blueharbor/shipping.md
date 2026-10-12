@@ -1,4 +1,4 @@
-# Shipping policy — Blue Harbor Beverages
+# Blue Harbor Beverages: shipping policy
 
 ## Rates and free shipping
 Standard shipping is a flat $5.99 per order. Orders with a subtotal of $50 or more ship free. Expedited 2-day shipping is available for $14.99 on orders under 40 lb.

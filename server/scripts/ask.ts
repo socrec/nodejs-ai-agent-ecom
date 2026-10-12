@@ -1,4 +1,4 @@
-// tsx scripts/ask.ts "return window" — prints top chunks per org (Phase 2 smoke test)
+// tsx scripts/ask.ts "return window" prints the top chunks per org (Phase 2 smoke test)
 import { retrieve } from "../src/rag/retrieve.ts";
 
 const q = process.argv[2] ?? "return window";

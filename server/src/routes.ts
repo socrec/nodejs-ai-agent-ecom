@@ -1,12 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { and, desc, eq, sql } from "drizzle-orm";
 import express, { type Request, type Response } from "express";
-import { addUsage, emptyUsage, runChat } from "./ai/agent.ts";
-import { GUARD_MODEL } from "./ai/client.ts";
+import { hasPendingOrder, runChat, summarize } from "./ai/agent.ts";
 import { classifyIntent } from "./ai/guard.ts";
-import { maskPhone, notify } from "./ai/notify.ts";
+import { HUMAN_PREFIX, maskPhone, notify } from "./ai/notify.ts";
 import { CANNED } from "./ai/prompt.ts";
-import { type Tx, withTenant } from "./db/client.ts";
+import { money } from "./ai/tools.ts";
+import { withTenant } from "./db/client.ts";
 import * as s from "./db/schema.ts";
 import { rateLimit } from "./rateLimit.ts";
 import { operatorOnly } from "./tenant.ts";
@@ -14,7 +14,9 @@ import { operatorOnly } from "./tenant.ts";
 export const routes = express.Router();
 const MAX_INPUT = 2000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const money = (cents: number) => Math.round(cents) / 100;
+/** Body fields are untrusted: anything but a string becomes "", strings are trimmed and capped. */
+const str = (v: unknown, max = Infinity) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+const body = (req: Request) => (req.body ?? {}) as Record<string, unknown>;
 
 /** Error → HTTP status + customer-safe message. Shared by the JSON error handler and the SSE error event. */
 export function statusOf(e: unknown): { status: number; error: string } {
@@ -58,25 +60,22 @@ export function toUi(rows: Row[]): UiMessage[] {
     if (lastWasToolResult && prev?.role === "assistant") { // continuation of the same agent turn
       prev.id = r.id; prev.text += text; prev.tools.push(...tools); prev.grounding = r.grounding ?? prev.grounding;
     } else {
-      out.push({ id: r.id, role: "assistant", text, tools, grounding: r.grounding, human: text.startsWith("[Human support agent]") });
+      const human = text.startsWith(HUMAN_PREFIX);
+      out.push({ id: r.id, role: "assistant", text: human ? text.slice(HUMAN_PREFIX.length) : text, tools, grounding: r.grounding, human });
     }
     lastWasToolResult = false;
   }
   return out;
 }
 
-const hasPendingOrder = async (tx: Tx, conversationId: string) =>
-  (await tx.select({ st: s.orders.status }).from(s.orders).where(eq(s.orders.conversationId, conversationId))).some((o) => o.st === "pending_approval");
-
 // ---------- chat (SSE) ----------  order: rateLimit → input cap → guard → (escalated ? handoff : agent)
 routes.post("/chat", rateLimit, async (req, res) => {
   const { orgId, sessionId } = req.ctx;
-  const body = (req.body ?? {}) as { message?: unknown; conversationId?: unknown };
-  const message = typeof body.message === "string" ? body.message.trim() : "";
-  if (!sessionId) return res.status(400).json({ error: "x-session-id header required" });
-  if (!message) return res.status(400).json({ error: "message required" });
-  if (message.length > MAX_INPUT) return res.status(413).json({ error: `Message too long (max ${MAX_INPUT} characters).` });
-  const requested = typeof body.conversationId === "string" && UUID.test(body.conversationId) ? body.conversationId : null;
+  const { message, conversationId } = body(req);
+  const text = str(message);
+  if (!text) return res.status(400).json({ error: "message required" });
+  if (text.length > MAX_INPUT) return res.status(413).json({ error: `Message too long (max ${MAX_INPUT} characters).` });
+  const requested = typeof conversationId === "string" && UUID.test(conversationId) ? conversationId : null;
 
   const conversation = await withTenant(orgId, async (tx) => {
     if (requested) {
@@ -94,13 +93,13 @@ routes.post("/chat", rateLimit, async (req, res) => {
   res.on("close", () => abort.abort());
 
   try {
-    const guard = await classifyIntent(orgId, message);
+    const guard = await classifyIntent(orgId, text);
     send("guard", { intent: guard.intent, confidence: guard.confidence });
     const canned = CANNED[guard.intent];
     if (canned || conversation.status === "escalated") {
       // No agent call: store the turn, answer with the canned line or hand off to the human queue.
       const { messageId, pendingOrder } = await withTenant(orgId, async (tx) => {
-        await tx.insert(s.messages).values({ orgId, conversationId: conversation.id, role: "user", content: message, guard: { intent: guard.intent, confidence: guard.confidence } });
+        await tx.insert(s.messages).values({ orgId, conversationId: conversation.id, role: "user", content: text, guard: { intent: guard.intent, confidence: guard.confidence } });
         let messageId = 0;
         if (canned) {
           const [row] = await tx.insert(s.messages).values({ orgId, conversationId: conversation.id, role: "assistant", content: [{ type: "text", text: canned }], grounding: { ungrounded: [] } }).returning({ id: s.messages.id });
@@ -108,13 +107,11 @@ routes.post("/chat", rateLimit, async (req, res) => {
         }
         return { messageId, pendingOrder: await hasPendingOrder(tx, conversation.id) };
       });
-      const usage = emptyUsage(GUARD_MODEL);
-      addUsage(usage, guard.model, guard.usage);
       if (canned) send("text_delta", { text: canned });
       else send("handoff", { message: "Your message was passed to a human support agent. They will reply here." });
-      send("done", { messageId, usage, grounding: { ungrounded: [] }, status: conversation.status, pendingOrder });
+      send("done", { messageId, usage: summarize([guard]), grounding: { ungrounded: [] }, status: conversation.status, pendingOrder });
     } else {
-      for await (const ev of runChat(ctx, message, guard, abort.signal)) send(ev.type, ev);
+      for await (const ev of runChat(ctx, text, guard, abort.signal)) send(ev.type, ev);
     }
   } catch (e) {
     if (!abort.signal.aborted) {
@@ -128,12 +125,6 @@ routes.post("/chat", rateLimit, async (req, res) => {
 });
 
 // ---------- customer-side reads ----------
-routes.get("/org", async (req, res) => {
-  const [org] = await withTenant(req.ctx.orgId, (tx) => tx.select().from(s.orgs));
-  if (!org) return res.status(404).json({ error: "unknown store" });
-  res.json({ id: org.id, name: org.name, approvalThreshold: money(org.approvalThresholdCents) });
-});
-
 routes.get("/products", async (req, res) => {
   const rows = await withTenant(req.ctx.orgId, (tx) => tx.select().from(s.products).orderBy(s.products.id));
   res.json(rows.map((p) => ({ id: p.id, sku: p.sku, name: p.name, category: p.category, description: p.description, price: money(p.priceCents), stock: p.stock })));
@@ -154,11 +145,13 @@ routes.get("/conversations/:id", async (req, res) => {
 
 routes.post("/messages/:id/feedback", async (req, res) => {
   const id = Number(req.params.id);
-  const { rating, note } = (req.body ?? {}) as { rating?: unknown; note?: unknown };
+  const { rating, note } = body(req);
   if (!Number.isInteger(id) || (rating !== "up" && rating !== "down")) return res.status(400).json({ error: "rating must be up|down" });
-  const cleanNote = typeof note === "string" ? note.slice(0, 500) : null;
+  const cleanNote = str(note, 500) || null;
   const ok = await withTenant(req.ctx.orgId, async (tx) => {
-    const [m] = await tx.select({ id: s.messages.id }).from(s.messages).where(eq(s.messages.id, id));
+    const [m] = await tx.select({ id: s.messages.id }).from(s.messages) // only messages in this shopper's own conversations
+      .innerJoin(s.conversations, eq(s.conversations.id, s.messages.conversationId))
+      .where(and(eq(s.messages.id, id), eq(s.conversations.sessionId, req.ctx.sessionId)));
     if (!m) return false;
     await tx.insert(s.messageFeedback).values({ messageId: id, orgId: req.ctx.orgId, rating, note: cleanNote })
       .onConflictDoUpdate({ target: s.messageFeedback.messageId, set: { rating, note: cleanNote } });
@@ -195,7 +188,7 @@ op.get("/queue", async (req, res) => {
 async function decide(req: Request, res: Response, approve: boolean) {
   const id = String(req.params.id);
   if (!UUID.test(id)) return res.status(404).json({ error: "not found" });
-  const note = typeof (req.body as { note?: unknown })?.note === "string" ? ((req.body as { note: string }).note).slice(0, 500) : null;
+  const note = str(body(req).note, 500) || null;
   const order = await withTenant(req.ctx.orgId, async (tx) => {
     const [o] = await tx.update(s.orders)
       .set({ status: approve ? "confirmed" : "rejected", decidedBy: "operator", decidedAt: new Date(), note })
@@ -212,7 +205,7 @@ op.post("/orders/:id/reject", (req, res) => decide(req, res, false));
 
 op.post("/tickets/:id/reply", async (req, res) => {
   const id = Number(req.params.id);
-  const text = String((req.body as { text?: unknown })?.text ?? "").trim().slice(0, 2000);
+  const text = str(body(req).text, 2000);
   if (!Number.isInteger(id) || !text) return res.status(400).json({ error: "text required" });
   const data = await withTenant(req.ctx.orgId, async (tx) => {
     const [t] = await tx.select().from(s.tickets).where(and(eq(s.tickets.id, id), eq(s.tickets.status, "open")));

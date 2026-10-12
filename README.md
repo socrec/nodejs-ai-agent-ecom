@@ -14,14 +14,14 @@ Stack: Node 22 · TypeScript · Express 5 · Drizzle + Postgres (RLS, pgvector) 
 npm install
 cp server/.env.example server/.env     # add ANTHROPIC_API_KEY
 npm run db:up                          # pgvector/pgvector:pg16 on :5432 (creates app_user via init.sql)
-npm run db:push                        # drizzle-kit push
+npm run db:push                        # drizzle-kit push + re-apply rls.sql (push drops the policies)
 npm run db:seed                        # 2 stores × 12 products, applies rls.sql
 npm run rag:ingest                     # chunks + embeds server/knowledge/** (downloads ~23 MB model once)
 npm run dev                            # api :3001 + web :5173 (vite proxies /api)
 ```
 
 Checks: `npm run check` (tsc, both workspaces) · `npm test` (chunking, grounding, rate limiter) ·
-`npm run eval` (10 scripted scenarios against the running server; `npm run eval -w server -- 4` runs one).
+`npm run eval` (11 scripted scenarios against the running server; `npm run eval -w server -- 4` runs one).
 
 Phase 2 smoke test without an API key: `cd server && npx tsx scripts/ask.ts "return window"` prints the
 30-day chunk for Acme and the 14-day chunk for Blue Harbor.
@@ -37,7 +37,7 @@ POST /api/chat  (x-org-id, x-session-id)          SSE: meta · guard · text_del
                    escalated conv.  → store message, emit handoff, no model call
                    otherwise        → agent.ts
   agent.ts       client.beta.messages.toolRunner({ stream, max_iterations: 8, effort: medium, fallbacks: "default" })
-                   tools.ts: makeTools(ctx) — org/session/conversation closed over, every query inside withTenant()
+                   tools.ts: makeTools(ctx), org/session/conversation closed over, every query inside withTenant()
                    final text → grounding.ts (every number must appear in a tool input/result)
                    history stored as raw Claude blocks, append-only; every model call → ai_usage
 ```
@@ -58,7 +58,7 @@ docker compose exec db psql -U app_user -d ecom -c "select count(*) from product
 
 1. Haiku intent classifier before the agent (`guard` badge in the UI; zero Opus tokens on off-topic).
 2. Frozen system prompt scope rules (`ai/prompt.ts`, cached with `cache_control`).
-3. Tool schemas (`zod .strict()`, caps, stock checks) — there is no discount/refund/price tool to inject into.
+3. Tool schemas (`zod .strict()`, caps, stock checks): there is no discount/refund/price tool to inject into.
 4. Output grounding (`ai/grounding.ts`): ⚠ badge and `ai_usage.ungrounded_numbers` when a number has no source.
 5. PII: phone masked to last 4 in operator/outbox views; `ai_usage` stores no message text.
 

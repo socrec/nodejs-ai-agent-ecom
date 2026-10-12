@@ -1,4 +1,4 @@
-# Frequently asked questions — Acme Snacks
+# Acme Snacks: frequently asked questions
 
 ## Payment methods
 We accept Visa, Mastercard, American Express, Discover, Apple Pay and Google Pay. We do not accept checks or purchase orders.

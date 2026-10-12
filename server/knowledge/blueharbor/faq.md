@@ -1,4 +1,4 @@
-# Frequently asked questions — Blue Harbor Beverages
+# Blue Harbor Beverages: frequently asked questions
 
 ## Payment methods
 We accept Visa, Mastercard, American Express and Apple Pay. Business customers can request net-30 invoicing by contacting support.

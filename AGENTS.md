@@ -15,13 +15,13 @@ Express/TS + Drizzle/Postgres (RLS) + React/Vite + `@anthropic-ai/sdk`.
 ```bash
 npm install                       # workspaces: server/, web/
 npm run db:up                     # docker compose up -d (pgvector/pgvector:pg16)
-npm run db:push                   # drizzle-kit push (server)
+npm run db:push                   # drizzle-kit push, then src/db/rls.ts (push drops the RLS policies)
 npm run db:seed                   # deterministic seed + applies src/db/rls.sql
 npm run rag:ingest                # chunk + embed server/knowledge/** → knowledge_chunks
 npm run dev                       # server :3001 + web :5173 (vite proxies /api)
 npm run check                     # tsc --noEmit in both workspaces
-npm run test                      # node --test (grounding, rateLimit)
-npm run eval                      # server/evals/run.ts — scenario pass/fail + cost
+npm run test                      # node --test (chunk, grounding, rateLimit)
+npm run eval                      # server/evals/run.ts: scenario pass/fail + cost
 ```
 
 `server/.env`: `DATABASE_URL` (app_user), `DATABASE_ADMIN_URL` (postgres; push/seed/ingest),
@@ -37,18 +37,18 @@ server/src/tenant.ts         x-org-id / x-session-id / x-user-id → req.ctx
 server/src/rateLimit.ts      sliding windows (session, org) + daily token budget from ai_usage
 server/src/db/schema.ts      drizzle tables (every data table has org_id; vector(384) on knowledge_chunks)
 server/src/db/rls.sql        policies + FORCE ROW LEVEL SECURITY
-server/src/db/client.ts      withTenant(orgId, fn) — the ONLY way tools touch the DB
+server/src/db/client.ts      withTenant(orgId, fn), the ONLY way tools touch the DB
 server/src/db/seed.ts        deterministic seed (seeded PRNG), 2 stores, demo stories
 server/src/ai/client.ts      Anthropic client, MODEL, GUARD_MODEL, PRICING, costUsd(), logUsage()
-server/src/ai/prompt.ts      frozen system prompt (no timestamps, no store name — that goes in the first user turn)
+server/src/ai/prompt.ts      frozen system prompt (no timestamps, no store name; that goes in the first user turn)
 server/src/ai/tools.ts       makeTools(ctx) → betaZodTool[]; org/session closed over
 server/src/ai/agent.ts       runChat(ctx, conversation, message) → AsyncGenerator<ChatEvent>
 server/src/ai/guard.ts       classifyIntent(message) via Haiku structured output
 server/src/ai/grounding.ts   verifyNumbers(text, toolResults) → { ungrounded: string[] }
 server/src/ai/notify.ts      confirmation()/rejection()/handoff() → outbox row + chat message
-server/src/rag/embed.ts      embed(texts) — MiniLM via @huggingface/transformers (swap seam)
+server/src/rag/embed.ts      embed(texts), MiniLM via @huggingface/transformers (swap seam)
 server/src/rag/ingest.ts     markdown → chunks → embeddings → knowledge_chunks
-server/src/rag/retrieve.ts   retrieve(orgId, query, k) — cosine top-k inside withTenant
+server/src/rag/retrieve.ts   retrieve(orgId, query, k), cosine top-k inside withTenant
 server/knowledge/<org>/*.md  shipping.md, returns.md, faq.md (+ generated products.md)
 server/evals/                scenarios.json + run.ts
 web/src/App.tsx              org switcher + Tabs: Storefront · Operator · Outbox
@@ -94,7 +94,8 @@ web/src/useChatStream.ts     fetch + ReadableStream SSE reader; 429 → toast wi
   messages, stream: true, max_iterations: 8, betas: ["server-side-fallback-2026-07-01"],
   fallbacks: "default" })`. `for await (const stream of runner)` → forward `text_delta` and
   tool_use `content_block_start`; `await stream.finalMessage()`; stop on
-  `stop_reason === "refusal"`, or `"max_tokens"` with a tool_use present.
+  `stop_reason === "refusal"` or `"max_tokens"` and repair the history (cancelled tool results +
+  apology). After `max_iterations` the history ends on tool results; append the apology there too.
 - Classifier/summary: `client.messages.parse({ output_config: { format: zodOutputFormat(S) } })`,
   guard `parsed_output === null` → treat as `shopping` (fail open to the agent, log it).
 - Caching: tools → system → messages; `cache_control: { type: "ephemeral" }` on the system

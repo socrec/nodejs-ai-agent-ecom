@@ -1,6 +1,6 @@
 // POST /api/chat via fetch + ReadableStream (SSE needs POST, so no EventSource). Polls the conversation
 // every 3 s while escalated or an order awaits approval so human/notification messages show up.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { type Conversation, type UiMessage, type UsageSummary, api, headers } from "./api.ts";
 
 type Ev = { type: string } & Record<string, any>;
@@ -14,19 +14,22 @@ export function useChatStream(org: string) {
   const [toast, setToast] = useState<string | null>(null);
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [tick, setTick] = useState(0); // bumps after every turn so the usage strip refetches
-  const convRef = useRef<string | null>(null);
+
+  const reset = useCallback(() => {
+    localStorage.removeItem(`conv:${org}`);
+    setConversationId(null); setMessages([]); setStatus("active"); setPendingOrder(false); setUsage(null);
+  }, [org]);
 
   const load = useCallback(async (id: string) => {
     try {
       const c = await api<Conversation>(org, `/conversations/${id}`);
       setMessages(c.messages); setStatus(c.status); setPendingOrder(c.pendingOrder);
-    } catch { localStorage.removeItem(`conv:${org}`); setConversationId(null); convRef.current = null; setMessages([]); }
-  }, [org]);
+    } catch { reset(); }
+  }, [org, reset]);
 
   useEffect(() => {
     const id = localStorage.getItem(`conv:${org}`);
-    convRef.current = id; setConversationId(id); setMessages([]); setStatus("active"); setPendingOrder(false); setUsage(null);
-    if (id) load(id);
+    if (id) { setConversationId(id); load(id); }
   }, [org, load]);
 
   useEffect(() => {
@@ -43,7 +46,7 @@ export function useChatStream(org: string) {
 
   const handle = (ev: Ev) => {
     switch (ev.type) {
-      case "meta": convRef.current = ev.conversationId; setConversationId(ev.conversationId); localStorage.setItem(`conv:${org}`, ev.conversationId); break;
+      case "meta": setConversationId(ev.conversationId); localStorage.setItem(`conv:${org}`, ev.conversationId); break;
       case "guard": setMessages((ms) => { const copy = ms.slice(); const u = copy[copy.length - 2]; if (u?.role === "user") copy[copy.length - 2] = { ...u, guard: { intent: ev.intent, confidence: ev.confidence } }; return copy; }); break;
       case "text_delta": patchLast((m) => { m.text += ev.text; }); break;
       case "tool_call": patchLast((m) => { m.tools.push({ id: ev.id, name: ev.name }); }); break;
@@ -59,7 +62,7 @@ export function useChatStream(org: string) {
     setBusy(true);
     setMessages((ms) => [...ms, { id: -Date.now(), role: "user", text, tools: [] }, { id: 0, role: "assistant", text: "", tools: [], streaming: true }]);
     try {
-      const res = await fetch("/api/chat", { method: "POST", headers: headers(org), body: JSON.stringify({ conversationId: convRef.current, message: text }) });
+      const res = await fetch("/api/chat", { method: "POST", headers: headers(org), body: JSON.stringify({ conversationId, message: text }) });
       if (!res.ok) {
         const body = await res.json().catch(() => ({})) as { error?: string; retryAfter?: number };
         const retry = res.headers.get("Retry-After");
@@ -87,7 +90,5 @@ export function useChatStream(org: string) {
     } finally { setBusy(false); setTick((t) => t + 1); }
   };
 
-  const reset = () => { localStorage.removeItem(`conv:${org}`); convRef.current = null; setConversationId(null); setMessages([]); setStatus("active"); setPendingOrder(false); setUsage(null); };
-
-  return { messages, send, busy, status, pendingOrder, toast, setToast, usage, tick, reset, conversationId };
+  return { messages, send, busy, status, pendingOrder, toast, usage, tick, reset };
 }

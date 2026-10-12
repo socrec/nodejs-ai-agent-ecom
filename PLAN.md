@@ -1,4 +1,4 @@
-# PLAN v2 — Multi-tenant E-commerce Ordering Agent (interview demo)
+# PLAN v2: Multi-tenant E-commerce Ordering Agent (interview demo)
 
 **Purpose.** A production-grade Node/TypeScript project AI agent
 engineering: a customer-facing shopping assistant that completes an ordering flow
@@ -15,14 +15,14 @@ and is rate-limited and cost-tracked per tenant. Built on Claude tool use, Expre
 |---|---|---|
 | Chat + complete an ordering flow | tools `add_to_cart`, `set_shipping_address`, `set_contact`, `place_order`; cart/order state in Postgres, never in the model | "2 bags of Sea Salt Chips to 12 Main St…" → cart card → address → phone → order # |
 | Send confirmation | `notify.ts` → `outbox` table (mock email/SMS) + chat message | Outbox tab shows the email; chat shows "Order #1042 confirmed" |
-| RAG | `knowledge_chunks` (pgvector, 384-d local embeddings) + `search_knowledge` tool, answers cite source | "What's your return window?" → cites `returns-policy.md` |
+| RAG | `knowledge_chunks` (pgvector, 384-d local embeddings) + `search_knowledge` tool, answers cite source | "What's your return window?" → cites `returns.md` |
 | Human-in-the-loop | `escalate_to_human` tool → ticket, conversation paused; orders > $500 → `pending_approval`; Operator console approves/rejects/replies | Operator tab: approve → confirmation goes out and lands in chat |
 | Guardrails for unrelated questions | 4 layers: Haiku intent classifier before the agent, system-prompt scope rules, tool-level validation (no discount tool exists), number grounding on output | "Write me a poem" → canned redirect, zero Opus tokens spent |
 | Rate limit | per-session sliding window, per-org hourly window, per-org daily token budget from `ai_usage`, input length cap, `max_iterations` cap | spam Send → 429 toast with Retry-After |
 | Tenant isolation (JD) | `x-org-id` → `set_config('app.org_id')` in a transaction → RLS, non-superuser role, FORCE RLS | ask for the other brand's product → nothing |
-| Streaming React UI with tables/cards (JD) | SSE: text deltas, tool chips, product/cart cards from tool JSON | — |
+| Streaming React UI with tables/cards (JD) | SSE: text deltas, tool chips, product/cart cards from tool JSON | - |
 | Accuracy/evals, usage, feedback, cost (JD) | `evals/run.ts` scripted multi-turn scenarios; `ai_usage` per org; thumbs per message | `npm run eval` table |
-| Docs for handover (JD) | `README.md`, `AGENTS.md`, this plan | — |
+| Docs for handover (JD) | `README.md`, `AGENTS.md`, this plan | - |
 
 ---
 
@@ -35,7 +35,7 @@ and is rate-limited and cost-tracked per tenant. Built on Claude tool use, Expre
 | DB | `pgvector/pgvector:pg16` in Docker Compose, Drizzle ORM (`vector()` column + `cosineDistance`), `postgres` driver | `drizzle-kit push`, no migration files |
 | AI | `@anthropic-ai/sdk`: `client.beta.messages.toolRunner` + `betaZodTool` (agent), `messages.parse` + `zodOutputFormat` (classifier, summary) | main model `claude-opus-5-5`; classifier `claude-haiku-5-5`; `CLAUDE_MODEL` env override |
 | Embeddings | `@huggingface/transformers` `Xenova/all-MiniLM-L6-v2` (384-d, local, no API key, ~23 MB download on first run) | seam: `embed(texts)` in `rag/embed.ts`; swap to Voyage/OpenAI in prod |
-| Frontend | Vite, React 19, Tailwind, shadcn/ui (Button, Card, Table, Badge, Input, Tabs), `react-markdown` | one page, three tabs: Storefront · Operator · Outbox, plus org switcher |
+| Frontend | Vite, React 19, Tailwind, `react-markdown` | one page, three tabs: Storefront · Operator · Outbox, plus org switcher |
 | Auth | mock headers `x-org-id` (store), `x-session-id` (customer, from localStorage), `x-user-id: operator` for the console | swap-in: Clerk for operators, anonymous session for shoppers |
 | Repo | npm workspaces `server/`, `web/`; `concurrently` | agents never commit; Dang commits |
 
@@ -117,7 +117,7 @@ sonnet-5-5 2 / 10 (0.20 / 2.50); haiku-5-5 0.10 / 0.50 (0.01 / 0.125).
 |---|---|---|
 | `search_products` | `query?`, `category?`, `max_price?`, `in_stock_only? (default true)`, `limit≤10` | ILIKE on name/description/category; returns id, name, price, stock, short description |
 | `search_knowledge` | `query`, `k≤6 (default 4)` | embed query → cosine top-k over `knowledge_chunks`; returns chunks with `source`, `heading`, `score` |
-| `get_cart` | — | items, subtotal, shipping (flat $5.99, free ≥ $50), total, address?, phone?, `missing: ['address','phone']` |
+| `get_cart` | - | items, subtotal, shipping (flat $5.99, free ≥ $50), total, address?, phone?, `missing: ['address','phone']` |
 | `add_to_cart` | `product_id`, `qty 1..20` | checks stock, upserts item, returns cart |
 | `remove_from_cart` | `product_id` | returns cart |
 | `set_shipping_address` | `name`, `line1`, `line2?`, `city`, `state`, `postal_code`, `country (default US)` | zod regex on postal/state; stores on cart |
@@ -133,14 +133,14 @@ mutations are idempotent per cart; no tool takes `org_id` or `session_id`.
 
 ## 5. Guardrails (`ai/guard.ts`, `ai/prompt.ts`, `ai/grounding.ts`)
 
-1. **Input classifier** — `claude-haiku-5-5`, `messages.parse` with
+1. **Input classifier**: `claude-haiku-5-5`, `messages.parse` with
    `z.object({ intent: z.enum(['shopping','support','chitchat','off_topic','abuse','prompt_injection']), confidence: z.number() })`,
    `effort: "low"`, `max_tokens: 256`. `off_topic`/`abuse` → canned reply, stored with `guard` json, no agent call. `prompt_injection` → agent still runs (tools are the real wall) but the turn is tagged for the eval.
-2. **System prompt scope** — "You are the shopping assistant for {store}. Only: products, orders, shipping, returns, this store's policies. Decline anything else in one sentence and offer help with an order. Never state a price, stock level or total you did not get from a tool. Never promise discounts, refunds or delivery dates not in policy. When unsure, call `search_knowledge`; if nothing relevant, say you don't know and offer a human." Store name is passed as the first user-turn preamble, not in the system text (cache stability).
-3. **Tool-level** — zod `.strict()` schemas, quantity/limit caps, stock checks, no discount/refund/price-override tool exists.
-4. **Output grounding** — numbers in the final text must appear in tool outputs (tolerant to `$12.99`, `12.99`, `1,299`). Ungrounded → ⚠ badge + `ai_usage.ungrounded_numbers`.
-5. **PII hygiene** — phone/address never logged to stdout; `ai_usage` stores no message text; operator console shows phone masked except last 4.
-6. **Input cap** — 2,000 chars per message; longer → 413.
+2. **System prompt scope**: "You are the shopping assistant for {store}. Only: products, orders, shipping, returns, this store's policies. Decline anything else in one sentence and offer help with an order. Never state a price, stock level or total you did not get from a tool. Never promise discounts, refunds or delivery dates not in policy. When unsure, call `search_knowledge`; if nothing relevant, say you don't know and offer a human." Store name is passed as the first user-turn preamble, not in the system text (cache stability).
+3. **Tool-level**: zod `.strict()` schemas, quantity/limit caps, stock checks (plus a `stock >= 0` check constraint against concurrent oversell), no discount/refund/price-override tool exists.
+4. **Output grounding**: numbers in the final text must appear in tool outputs (tolerant to `$12.99`, `12.99`, `1,299`). Ungrounded → ⚠ badge + `ai_usage.ungrounded_numbers`.
+5. **PII hygiene**: phone/address never logged to stdout; `ai_usage` stores no message text; operator console shows phone masked except last 4.
+6. **Input cap**: 2,000 chars per message; longer → 413.
 
 ---
 
@@ -161,7 +161,7 @@ mutations are idempotent per cart; no tool takes `org_id` or `session_id`.
 | Messages per session | `sess:{orgId}:{sessionId}` | 20 / 10 min | 429 + `Retry-After` |
 | Messages per org | `org:{orgId}` | 300 / hour | 429 |
 | Daily token budget per org | `sum(ai_usage.input+output) where created_at ≥ today` | 3,000,000 tokens | 429 `{ reason: 'budget' }` |
-| Per-turn work | `max_iterations: 8`, `max_tokens: 16000` | — | model stops; answer says so |
+| Per-turn work | `max_iterations: 8`, `max_tokens: 16000` | - | model stops; answer says so |
 | Concurrency per session | in-flight flag | 1 | 409 if a turn is already streaming |
 
 In-memory `Map<string, number[]>` sliding window with periodic prune. `ponytail:` single
@@ -261,5 +261,5 @@ Output: markdown table + totals (pass %, grounded %, USD). Run with `CLAUDE_MODE
 
 ## 14. Skipped on purpose
 
-Payments (order is "placed", not charged; Stripe is the swap-in at `place_order`), real email/SMS (outbox table), Clerk, PostHog/Sentry (one-line `track()` stub), migrations, HNSW index, hybrid search/rerank, websockets, tests beyond `tsc` + evals + two tiny `node --test` checks (grounding, rate limiter), deployment.
+Payments (order is "placed", not charged; Stripe is the swap-in at `place_order`), real email/SMS (outbox table), Clerk, PostHog/Sentry (one-line `track()` stub), migrations, HNSW index, hybrid search/rerank, websockets, tests beyond `tsc` + evals + three tiny `node --test` checks (chunking, grounding, rate limiter), deployment.
 

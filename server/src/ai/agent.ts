@@ -2,7 +2,7 @@
 // content blocks append-only, logs every model call to ai_usage, runs number grounding on the final text.
 import type Anthropic from "@anthropic-ai/sdk";
 import { eq } from "drizzle-orm";
-import { withTenant } from "../db/client.ts";
+import { type Tx, withTenant } from "../db/client.ts";
 import * as s from "../db/schema.ts";
 import { MODEL, client, costUsd, logUsage, type Usage } from "./client.ts";
 import { verifyNumbers } from "./grounding.ts";
@@ -13,7 +13,7 @@ import { type Ctx, type ToolRecord, makeTools } from "./tools.ts";
 type MessageParam = Anthropic.Beta.BetaMessageParam;
 type Block = Anthropic.Beta.BetaContentBlockParam;
 
-export type UsageSummary = { calls: number; input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number; model: string };
+export type UsageSummary = { calls: number; input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number };
 export type ChatEvent =
   | { type: "text_delta"; text: string }
   | { type: "tool_call"; id: string; name: string }
@@ -21,12 +21,19 @@ export type ChatEvent =
   | { type: "handoff"; message: string }
   | { type: "done"; messageId: number; usage: UsageSummary; grounding: { ungrounded: string[] }; status: string; pendingOrder: boolean };
 
-export const emptyUsage = (model: string): UsageSummary => ({ calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, model });
-export function addUsage(sum: UsageSummary, model: string, u: Usage) {
-  sum.calls++; sum.input += u.input_tokens; sum.output += u.output_tokens;
-  sum.cacheRead += u.cache_read_input_tokens ?? 0; sum.cacheWrite += u.cache_creation_input_tokens ?? 0;
-  sum.costUsd += costUsd(model, u);
+/** Turn totals for the `done` event: the guard call plus every agent iteration. */
+export function summarize(calls: { model: string; usage: Usage }[]): UsageSummary {
+  const sum: UsageSummary = { calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 };
+  for (const { model, usage: u } of calls) {
+    sum.calls++; sum.input += u.input_tokens; sum.output += u.output_tokens;
+    sum.cacheRead += u.cache_read_input_tokens ?? 0; sum.cacheWrite += u.cache_creation_input_tokens ?? 0;
+    sum.costUsd += costUsd(model, u);
+  }
+  return sum;
 }
+
+export const hasPendingOrder = async (tx: Tx, conversationId: string) =>
+  (await tx.select({ status: s.orders.status }).from(s.orders).where(eq(s.orders.conversationId, conversationId))).some((o) => o.status === "pending_approval");
 
 /** Numbers the model was allowed to use: every tool input and tool result in the conversation. */
 export function toolData(history: MessageParam[]): unknown[] {
@@ -72,8 +79,6 @@ export async function* runChat(ctx: Ctx, message: string, guard: GuardResult, si
     fallbacks: "default",
   }, { signal });
 
-  const usage = emptyUsage(MODEL);
-  addUsage(usage, guard.model, guard.usage);
   const calls: { model: string; usage: Usage; latencyMs: number }[] = [];
   let text = "";
   let cutOff: Anthropic.Beta.BetaMessage | undefined;
@@ -91,23 +96,25 @@ export async function* runChat(ctx: Ctx, message: string, guard: GuardResult, si
       }
       const msg = await stream.finalMessage();
       calls.push({ model: msg.model, usage: msg.usage, latencyMs: Date.now() - t0 });
-      addUsage(usage, msg.model, msg.usage);
-      const hasToolUse = msg.content.some((b) => b.type === "tool_use");
-      if (msg.stop_reason === "refusal" || (msg.stop_reason === "max_tokens" && hasToolUse)) { cutOff = msg; break; }
+      // Break before the runner appends the message so the repair below owns it (and its unanswered tool calls).
+      if (msg.stop_reason === "refusal" || msg.stop_reason === "max_tokens") { cutOff = msg; break; }
     }
   } catch (e) {
+    for (const c of calls) await logUsage({ orgId: ctx.orgId, feature: "chat", ...c });
     await logUsage({ orgId: ctx.orgId, feature: "chat", model: MODEL, latencyMs: 0, error: (e as Error).constructor.name });
     throw e;
   }
   for (const r of pending.splice(0)) yield { type: "tool_result", ...r };
 
-  // New history = what the runner appended (assistant turns + tool results), plus repair if we broke out.
+  // New history = what the runner appended (assistant turns + tool results), repaired when the turn ended mid-way.
   const added: MessageParam[] = runner.params.messages.slice(baseLen).map((m) => ({ role: m.role, content: m.content }));
   if (cutOff) {
     added.push({ role: "assistant", content: cutOff.content });
     const uses = cutOff.content.filter((b) => b.type === "tool_use");
     if (uses.length) added.push({ role: "user", content: uses.map((u) => ({ type: "tool_result" as const, tool_use_id: u.id, content: "Cancelled: the reply was cut off.", is_error: true })) });
-    const apology = cutOff.stop_reason === "refusal"
+  }
+  if (cutOff || added.at(-1)?.role === "user") { // cut off, or max_iterations ended the turn on tool results
+    const apology = cutOff?.stop_reason === "refusal"
       ? "I can't help with that request. I can help with products, your cart and orders."
       : "I ran out of room for that reply. Could you rephrase or split your request?";
     added.push({ role: "assistant", content: [{ type: "text", text: apology }] });
@@ -126,13 +133,10 @@ export async function* runChat(ctx: Ctx, message: string, guard: GuardResult, si
       if (m.role === "assistant") messageId = row!.id;
     }
     const [c] = await tx.select({ status: s.conversations.status }).from(s.conversations).where(eq(s.conversations.id, ctx.conversationId));
-    const orders = await tx.select({ status: s.orders.status }).from(s.orders).where(eq(s.orders.conversationId, ctx.conversationId));
-    const pendingOrder = orders.some((o) => o.status === "pending_approval");
-    return { messageId, status: c!.status, pendingOrder };
+    return { messageId, status: c!.status, pendingOrder: await hasPendingOrder(tx, ctx.conversationId) };
   });
   for (const [i, c] of calls.entries()) {
-    await logUsage({ orgId: ctx.orgId, feature: "chat", model: c.model, usage: c.usage, latencyMs: c.latencyMs,
-      ungrounded: i === calls.length - 1 ? grounding.ungrounded.length : 0 });
+    await logUsage({ orgId: ctx.orgId, feature: "chat", ...c, ungrounded: i === calls.length - 1 ? grounding.ungrounded.length : 0 });
   }
-  yield { type: "done", messageId, usage, grounding, status, pendingOrder };
+  yield { type: "done", messageId, usage: summarize([guard, ...calls]), grounding, status, pendingOrder };
 }

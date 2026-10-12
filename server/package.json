@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "db:push": "drizzle-kit push",
+    "db:push": "drizzle-kit push && tsx src/db/rls.ts",
     "db:seed": "tsx src/db/seed.ts",
     "rag:ingest": "tsx src/rag/ingest.ts",
     "check": "tsc --noEmit",

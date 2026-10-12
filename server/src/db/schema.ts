@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
-  doublePrecision, index, integer, jsonb, pgTable, primaryKey, serial, text, timestamp, uniqueIndex, uuid, vector,
+  check, doublePrecision, index, integer, jsonb, pgTable, primaryKey, serial, text, timestamp, uniqueIndex, uuid, vector,
 } from "drizzle-orm/pg-core";
 
 const orgId = () => text("org_id").notNull().references(() => orgs.id);
@@ -21,7 +21,7 @@ export const products = pgTable("products", {
   description: text("description").notNull(),
   priceCents: integer("price_cents").notNull(),
   stock: integer("stock").notNull(),
-}, (t) => [uniqueIndex("products_org_sku").on(t.orgId, t.sku)]);
+}, (t) => [uniqueIndex("products_org_sku").on(t.orgId, t.sku), check("products_stock_nonneg", sql`${t.stock} >= 0`)]); // no oversell under concurrent place_order
 
 export const knowledgeChunks = pgTable("knowledge_chunks", {
   id: serial("id").primaryKey(),

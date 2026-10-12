@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
-import { type Product, type ToolCall, type UiMessage, api } from "./api.ts";
+import { type Product, type ToolCall, type UiMessage, api, sessionId } from "./api.ts";
 import { useChatStream } from "./useChatStream.ts";
 
 const usd = (n: number) => `$${n.toFixed(2)}`;
@@ -12,7 +12,7 @@ const Badge = ({ tone = "slate", children }: { tone?: string; children: React.Re
   <span className={`inline-block rounded px-1.5 py-0.5 text-xs ${TONES[tone]}`}>{children}</span>
 );
 
-/** Cards render from tool JSON only — never parsed from prose. */
+/** Cards render from tool JSON only, never parsed from prose. */
 function ToolCard({ t }: { t: ToolCall }) {
   const r = t.result as any;
   if (!r) return null;
@@ -77,7 +77,7 @@ function Bubble({ m, org }: { m: UiMessage; org: string }) {
       {(m.text || m.streaming) && (
         <div className={`rounded-2xl rounded-bl-sm px-3 py-2 text-sm ${m.human ? "border border-purple-200 bg-purple-50" : m.error ? "bg-red-50 text-red-800" : m.handoff ? "bg-amber-50" : "bg-white border border-slate-200"}`}>
           {m.human && <div className="mb-1 text-xs font-medium text-purple-700">Human support agent</div>}
-          <div className="[&_p]:my-1 [&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_strong]:font-semibold [&_code]:rounded [&_code]:bg-slate-100 [&_code]:px-1"><Markdown>{m.human ? m.text.replace(/^\[Human support agent\]\s*/, "") : m.text || (m.streaming ? "…" : "")}</Markdown></div>
+          <div className="[&_p]:my-1 [&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_strong]:font-semibold [&_code]:rounded [&_code]:bg-slate-100 [&_code]:px-1"><Markdown>{m.text || (m.streaming ? "…" : "")}</Markdown></div>
         </div>
       )}
       {!m.streaming && m.id > 0 && !m.human && (
@@ -111,7 +111,7 @@ export function Storefront({ org }: { org: string }) {
     <div className="grid h-full min-h-0 gap-4 lg:grid-cols-[1fr_300px]">
       <section className="relative flex min-h-0 flex-col rounded-lg border border-slate-200 bg-slate-100/60">
         <div className="flex items-center gap-2 border-b border-slate-200 px-3 py-2 text-xs text-slate-600">
-          <span>Session {localStorage.getItem("session")?.slice(0, 8)}</span>
+          <span>Session {sessionId().slice(0, 8)}</span>
           {chat.status === "escalated" && <Badge tone="purple">waiting for a human agent…</Badge>}
           {chat.pendingOrder && <Badge tone="amber">order awaiting approval…</Badge>}
           <button onClick={chat.reset} className="ml-auto rounded border border-slate-300 bg-white px-2 py-0.5 hover:bg-slate-50">New conversation</button>

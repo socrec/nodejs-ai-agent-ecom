@@ -42,7 +42,7 @@ export function Operator({ org }: { org: string }) {
               <div className="flex items-baseline justify-between"><span className="font-medium">Ticket #{t.id} · {t.reason}</span><span className="text-xs text-slate-500">{new Date(t.createdAt).toLocaleTimeString()}</span></div>
               <div className="text-xs text-slate-700">{t.summary}</div>
               <div className="mt-2 space-y-1 rounded bg-white/70 p-2 text-xs">
-                {t.messages.map((m) => <div key={m.id}><span className="font-medium">{m.role === "user" ? "Customer" : m.human ? "Agent" : "Assistant"}:</span> {m.text.replace(/^\[Human support agent\]\s*/, "").slice(0, 240)}</div>)}
+                {t.messages.map((m) => <div key={m.id}><span className="font-medium">{m.role === "user" ? "Customer" : m.human ? "Agent" : "Assistant"}:</span> {m.text.slice(0, 240)}</div>)}
               </div>
               <div className="mt-2 flex gap-2">
                 <input value={reply[t.id] ?? ""} onChange={(e) => setReply({ ...reply, [t.id]: e.target.value })} placeholder="Reply to the customer…"

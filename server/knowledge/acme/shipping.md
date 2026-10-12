@@ -1,4 +1,4 @@
-# Shipping policy — Acme Snacks
+# Acme Snacks: shipping policy
 
 ## Rates and free shipping
 Standard shipping is a flat $5.99 per order. Orders with a subtotal of $50 or more ship free. We do not offer expedited shipping at this time.

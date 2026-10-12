@@ -1,5 +1,6 @@
 // Requests AND tokens: sliding windows per session/org in memory + per-org daily token budget from ai_usage.
-// ponytail: single process; move the windows to Redis when horizontally scaled.
+// Plus the one shared Anthropic key's ceiling: concurrency caps (global, per org) and a global pause on upstream 429.
+// ponytail: single process; move the windows, inflight set and pause to Redis when horizontally scaled.
 import type { NextFunction, Request, Response } from "express";
 import { gte, sql } from "drizzle-orm";
 import { withTenant } from "./db/client.ts";
@@ -9,10 +10,14 @@ export const LIMITS = {
   session: { max: 20, windowMs: 10 * 60_000 },
   org: { max: 300, windowMs: 60 * 60_000 },
   dailyTokens: 3_000_000,
+  concurrent: { global: 40, org: 10 }, // turns streaming at once; each is up to 8 Opus calls
 };
+export const BUSY = "The assistant is busy right now. Please retry in a moment.";
 
 const windows = new Map<string, number[]>();
-const inflight = new Set<string>();
+/** `sess:{orgId}:{sessionId}` of every turn currently streaming. Exported for the test only. */
+export const inflight = new Set<string>();
+let pausedUntil = 0;
 
 /** Returns 0 if allowed (and records the hit), else seconds until the oldest hit leaves the window. */
 export function hit(key: string, max: number, windowMs: number, now = Date.now()): number {
@@ -23,6 +28,18 @@ export function hit(key: string, max: number, windowMs: number, now = Date.now()
   return 0;
 }
 
+/** Anthropic answered 429: hold new turns for retry-after instead of letting every request retry at once. */
+// ponytail: one global pause shared by guard (Haiku) and agent (Opus) limits; per-model if they diverge.
+export function pauseFor(seconds: number, now = Date.now()) { pausedUntil = Math.max(pausedUntil, now + seconds * 1000); }
+
+/** Seconds a new turn must wait, or 0: upstream pause first, then the global and per-org concurrency caps. */
+export function waitFor(orgId: string, now = Date.now()): number {
+  if (pausedUntil > now) return Math.ceil((pausedUntil - now) / 1000);
+  let org = 0;
+  for (const k of inflight) if (k.startsWith(`sess:${orgId}:`)) org++;
+  return inflight.size >= LIMITS.concurrent.global || org >= LIMITS.concurrent.org ? 5 : 0;
+}
+
 setInterval(() => { for (const [k, v] of windows) if (v.every((t) => t < Date.now() - LIMITS.org.windowMs)) windows.delete(k); }, 60_000).unref();
 
 export async function rateLimit(req: Request, res: Response, next: NextFunction) {
@@ -30,6 +47,8 @@ export async function rateLimit(req: Request, res: Response, next: NextFunction)
   if (!sessionId) return res.status(400).json({ error: "x-session-id header required" }); // the session window needs a key
   const sessKey = `sess:${orgId}:${sessionId}`;
   if (inflight.has(sessKey)) return res.status(409).json({ error: "A reply is still streaming for this session." });
+  const wait = waitFor(orgId); // before the windows so a rejected turn does not consume a hit
+  if (wait) return res.status(503).set("Retry-After", String(wait)).json({ error: BUSY, retryAfter: wait });
   for (const [key, l] of [[sessKey, LIMITS.session], [`org:${orgId}`, LIMITS.org]] as const) {
     const retry = hit(key, l.max, l.windowMs);
     if (retry) return res.status(429).set("Retry-After", String(retry)).json({ error: "Too many messages. Please slow down.", retryAfter: retry });

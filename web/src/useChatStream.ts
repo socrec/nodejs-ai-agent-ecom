@@ -65,8 +65,8 @@ export function useChatStream(org: string) {
       const res = await fetch("/api/chat", { method: "POST", headers: headers(org), body: JSON.stringify({ conversationId, message: text }) });
       if (!res.ok) {
         const body = await res.json().catch(() => ({})) as { error?: string; retryAfter?: number };
-        const retry = res.headers.get("Retry-After");
-        setToast(res.status === 429 ? `${body.error ?? "Rate limited."} Retry in ${retry ?? body.retryAfter}s.` : body.error ?? `Error ${res.status}`);
+        const retry = res.headers.get("Retry-After") ?? body.retryAfter; // 429 (our windows) and 503 (busy / upstream pause)
+        setToast(`${body.error ?? `Error ${res.status}`}${retry ? ` Retry in ${retry}s.` : ""}`);
         setMessages((ms) => ms.slice(0, -2));
         return;
       }

@@ -70,12 +70,16 @@ export async function* runChat(ctx: Ctx, message: string, guard: GuardResult, si
     model: MODEL,
     max_tokens: 16000,
     system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
+    cache_control: { type: "ephemeral" }, // second breakpoint on the last message: history is read from cache, not re-billed per iteration
     tools: makeTools(ctx, (r) => pending.push(r)),
     messages: history,
     stream: true,
     max_iterations: 8,
     output_config: { effort: "medium" },
-    betas: ["server-side-fallback-2026-07-01"],
+    // Server-side context editing: once the prompt passes 30k tokens, old tool results (product lists, carts) are
+    // dropped from what the model sees. Not a history edit (preserved thinking stays valid); our stored rows are untouched.
+    context_management: { edits: [{ type: "clear_tool_uses_20250919", trigger: { type: "input_tokens", value: 30_000 }, keep: { type: "tool_uses", value: 5 }, clear_at_least: { type: "input_tokens", value: 5_000 } }] },
+    betas: ["server-side-fallback-2026-07-01", "context-management-2025-06-27"],
     fallbacks: "default",
   }, { signal });
 

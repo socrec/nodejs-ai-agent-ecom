@@ -78,8 +78,8 @@ and is rate-limited and cost-tracked per tenant. Built on Claude tool use, Expre
 8. **Model explains, SQL calculates, code verifies.** Prices, totals, stock come from tools; `grounding.ts` flags any number in the answer not present in tool results.
 9. **Conversation = raw Claude content blocks, append-only.** `response.content` stored whole and replayed; operator replies are appended as assistant text prefixed `[Human support agent]`. Satisfies the Opus 5.5 rule that history is never edited and keeps the cache prefix stable.
 10. **SDK tool runner over a hand-written loop**; `stream: true` → one stream per iteration forwarded to SSE. Know the manual loop for the interview.
-11. **Caching + effort.** tools → system → messages, frozen system text, `cache_control` on the system block; `effort: "medium"` for the agent, `"low"` for the classifier.
-12. **Resilience.** `betas: ["server-side-fallback-2026-07-01"], fallbacks: "default"` on the agent call; SDK retries 429/5xx twice; we surface 503 with a friendly message. Drop if unwanted.
+11. **Caching + effort + context.** tools → system → messages, frozen system text, `cache_control` on the system block plus a top-level one (last message), so the growing history is a cache read on every iteration, not fresh input (and cache reads don't count toward Anthropic's ITPM limit). Server-side `clear_tool_uses_20250919` context editing drops old tool results once the prompt passes 30k tokens; stored rows stay append-only, so it is not a history edit. `effort: "medium"` for the agent, `"low"` for the classifier.
+12. **Resilience.** `betas: ["server-side-fallback-2026-07-01"], fallbacks: "default"` on the agent call; SDK retries 429/5xx twice; we surface 503 with a friendly message. One shared key: concurrency caps (40 global, 10 per org) and a global pause on upstream 429 (`rateLimit.ts`) stop N tenants from summing past the account limit. Drop if unwanted.
 
 ---
 
@@ -163,10 +163,16 @@ mutations are idempotent per cart; no tool takes `org_id` or `session_id`.
 | Daily token budget per org | `sum(ai_usage.input+output) where created_at ≥ today` | 3,000,000 tokens | 429 `{ reason: 'budget' }` |
 | Per-turn work | `max_iterations: 8`, `max_tokens: 16000` | - | model stops; answer says so |
 | Concurrency per session | in-flight flag | 1 | 409 if a turn is already streaming |
+| Concurrent turns per org | `inflight` keys with prefix `sess:{orgId}:` | 10 | 503 + `Retry-After: 5` |
+| Concurrent turns, all orgs | `inflight.size` | 40 | 503 + `Retry-After: 5` |
+| Upstream 429 | `pauseFor(retry-after)` global pause | - | 503 + `Retry-After` until it lifts |
 
 In-memory `Map<string, number[]>` sliding window with periodic prune. `ponytail:` single
 process; move windows to Redis when horizontally scaled. Anthropic 429/529 → SDK retries
-twice → we return 503 with a human message and log `ai_usage.feature='chat', error`.
+twice → we return 503 with a human message and log `ai_usage.feature='chat', error`. The 429
+also sets a global pause (`pauseFor(retry-after)`) so new turns get an immediate 503 instead of
+piling retries onto the one shared key. Production: one Anthropic Workspace per tenant tier with
+its own RPM/ITPM caps, so a noisy tenant 429s alone (org-wide limits still apply on top).
 
 ---
 

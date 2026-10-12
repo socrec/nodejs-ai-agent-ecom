@@ -8,7 +8,7 @@ import { CANNED } from "./ai/prompt.ts";
 import { money } from "./ai/tools.ts";
 import { withTenant } from "./db/client.ts";
 import * as s from "./db/schema.ts";
-import { rateLimit } from "./rateLimit.ts";
+import { BUSY, pauseFor, rateLimit } from "./rateLimit.ts";
 import { operatorOnly } from "./tenant.ts";
 
 export const routes = express.Router();
@@ -20,7 +20,10 @@ const body = (req: Request) => (req.body ?? {}) as Record<string, unknown>;
 
 /** Error → HTTP status + customer-safe message. Shared by the JSON error handler and the SSE error event. */
 export function statusOf(e: unknown): { status: number; error: string } {
-  if (e instanceof Anthropic.RateLimitError) return { status: 503, error: "The assistant is busy right now. Please retry in a moment." };
+  if (e instanceof Anthropic.RateLimitError) { // hold new turns too; the spend-cap 429 has no retry-after
+    pauseFor(Number(e.headers.get("retry-after")) || 10);
+    return { status: 503, error: BUSY };
+  }
   if (e instanceof Anthropic.APIError) return { status: 502, error: "The AI service returned an error. Please try again." };
   const t = (e as { type?: string })?.type;
   if (t === "entity.parse.failed") return { status: 400, error: "Invalid JSON body." };

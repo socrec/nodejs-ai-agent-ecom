@@ -91,7 +91,8 @@ web/src/useChatStream.ts     fetch + ReadableStream SSE reader; 429 → toast wi
   agent `"medium"`, guard `"low"`.
 - Never force `tool_choice` (`any`/`tool` → 400). Steer from the prompt; zod validates inputs.
 - Agent loop: `client.beta.messages.toolRunner({ model, max_tokens: 16000, system, tools,
-  messages, stream: true, max_iterations: 8, betas: ["server-side-fallback-2026-07-01"],
+  messages, stream: true, max_iterations: 8, cache_control, context_management,
+  betas: ["server-side-fallback-2026-07-01", "context-management-2025-06-27"],
   fallbacks: "default" })`. `for await (const stream of runner)` → forward `text_delta` and
   tool_use `content_block_start`; `await stream.finalMessage()`; stop on
   `stop_reason === "refusal"` or `"max_tokens"` and repair the history (cancelled tool results +
@@ -99,7 +100,13 @@ web/src/useChatStream.ts     fetch + ReadableStream SSE reader; 429 → toast wi
 - Classifier/summary: `client.messages.parse({ output_config: { format: zodOutputFormat(S) } })`,
   guard `parsed_output === null` → treat as `shopping` (fail open to the agent, log it).
 - Caching: tools → system → messages; `cache_control: { type: "ephemeral" }` on the system
-  block; system text byte-stable. Check `usage.cache_read_input_tokens`.
+  block AND top-level (caches the last message, so history is a cache read per iteration);
+  system text byte-stable. Check `usage.cache_read_input_tokens`.
+- Context: `context_management: { edits: [{ type: "clear_tool_uses_20250919", ... }] }` with beta
+  `context-management-2025-06-27` trims old tool results server-side. Never trim history
+  client-side (preserved thinking → 400 on new accounts; breaks invariant 8).
+- One shared key: `rateLimit.ts` caps concurrent turns (global/org) and `pauseFor()` holds new
+  turns after an upstream 429 (`statusOf` in routes.ts sets it). Both answer 503 + Retry-After.
 - Use SDK types (`Anthropic.Beta.BetaMessageParam`, …). Don't redefine message shapes.
 - Errors: `Anthropic.RateLimitError` → 503 "busy, retry"; `Anthropic.APIError` → 502; else 500.
 

@@ -1,20 +1,11 @@
 # PLAN v2 — Multi-tenant E-commerce Ordering Agent (interview demo)
 
-**Purpose.** A runnable Node/TypeScript project that demonstrates production-grade AI agent
+**Purpose.** A production-grade Node/TypeScript project AI agent
 engineering: a customer-facing shopping assistant that completes an ordering flow
 (cart → address → phone → confirmation), answers policy/product questions with RAG,
 escalates to a human and waits for human approval where it must, refuses off-topic requests,
 and is rate-limited and cost-tracked per tenant. Built on Claude tool use, Express, Drizzle
 + Postgres (RLS + pgvector), React.
-
-**Deadline.** Interview 2026-10-12. Core build (phases 1–7) ≈ 6 h. Phase 8 is the bridge
-to the JD's analytics use case and is optional.
-
-**JD fit, stated plainly.** The InApps role is an *analytics* chatbot + AI summaries for
-brand managers. This demo shows the harder, more general agent skills (stateful flows,
-HITL, RAG, guardrails, rate limits) on the same stack and tenancy model. Phase 8 adds a
-"Store Manager" tab that answers "what sold this week" + a weekly summary with two extra
-tools, so you can show both personas on one harness.
 
 ---
 
@@ -272,9 +263,3 @@ Output: markdown table + totals (pass %, grounded %, USD). Run with `CLAUDE_MODE
 
 Payments (order is "placed", not charged; Stripe is the swap-in at `place_order`), real email/SMS (outbox table), Clerk, PostHog/Sentry (one-line `track()` stub), migrations, HNSW index, hybrid search/rerank, websockets, tests beyond `tsc` + evals + two tiny `node --test` checks (grounding, rate limiter), deployment.
 
----
-
-## 15. Prerequisites before Phase 3
-
-- `ANTHROPIC_API_KEY` in `server/.env` (not set in this shell; `ant` CLI not installed). Phases 1–2 need no key.
-- Docker running (checked), Node 22 + npm 10 (checked). First `rag:ingest` downloads ~23 MB for the embedding model.

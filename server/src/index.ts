@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { routes, statusOf } from "./routes.ts";
 import { tenant } from "./tenant.ts";
@@ -5,6 +6,7 @@ import { tenant } from "./tenant.ts";
 const app = express();
 app.use(express.json({ limit: "32kb" }));
 app.use("/api", tenant, routes);
+app.use(express.static(fileURLToPath(new URL("../../web/dist", import.meta.url)))); // prod: one service serves the built UI
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   const mapped = statusOf(err);
   if (mapped.status >= 500) console.error((err as Error)?.constructor?.name, (err as Error)?.message);

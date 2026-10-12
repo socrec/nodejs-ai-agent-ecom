@@ -49,6 +49,10 @@ export async function rateLimit(req: Request, res: Response, next: NextFunction)
   if (inflight.has(sessKey)) return res.status(409).json({ error: "A reply is still streaming for this session." });
   const wait = waitFor(orgId); // before the windows so a rejected turn does not consume a hit
   if (wait) return res.status(503).set("Retry-After", String(wait)).json({ error: BUSY, retryAfter: wait });
+  // Reserve the slot before the first await: check → await budget query → add let a whole burst pass both caps.
+  // "close" fires for every outcome below (the 429s included), so this one listener releases it.
+  inflight.add(sessKey);
+  res.on("close", () => inflight.delete(sessKey));
   for (const [key, l] of [[sessKey, LIMITS.session], [`org:${orgId}`, LIMITS.org]] as const) {
     const retry = hit(key, l.max, l.windowMs);
     if (retry) return res.status(429).set("Retry-After", String(retry)).json({ error: "Too many messages. Please slow down.", retryAfter: retry });
@@ -60,7 +64,5 @@ export async function rateLimit(req: Request, res: Response, next: NextFunction)
     const retry = Math.ceil((new Date().setUTCHours(24, 0, 0, 0) - Date.now()) / 1000);
     return res.status(429).set("Retry-After", String(retry)).json({ error: "This store's daily AI budget is used up. Try again tomorrow.", reason: "budget", retryAfter: retry });
   }
-  inflight.add(sessKey);
-  res.on("close", () => inflight.delete(sessKey));
   next();
 }

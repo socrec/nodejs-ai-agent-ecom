@@ -1,6 +1,7 @@
 // Deterministic seed: 2 stores × 12 products (two out of stock, one bundle whose 2 units cross the
-// $500 approval threshold). Runs as admin (bypasses RLS), then applies rls.sql.
+// $500 approval threshold). Runs as admin, then applies rls.sql.
 import { readFileSync } from "node:fs";
+import { sql as q } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import * as s from "./schema.ts";
@@ -51,8 +52,13 @@ const db = drizzle(sql);
 
 await sql.unsafe(`truncate orgs, products, knowledge_chunks, carts, cart_items, orders, conversations, messages,
   message_feedback, tickets, outbox, ai_usage restart identity cascade`);
-await db.insert(s.orgs).values(ORGS);
-await db.insert(s.products).values(ORGS.flatMap((o) => PRODUCTS[o.id]!.map((p) => ({ ...p, orgId: o.id }))));
+// Per-org tenant context, like withTenant(): hosted Postgres (Render) admin is only the table owner, so a
+// re-seed runs under FORCE RLS.
+for (const o of ORGS) await db.transaction(async (tx) => {
+  await tx.execute(q`select set_config('app.org_id', ${o.id}, true)`);
+  await tx.insert(s.orgs).values(o);
+  await tx.insert(s.products).values(PRODUCTS[o.id]!.map((p) => ({ ...p, orgId: o.id })));
+});
 await sql.unsafe(readFileSync(new URL("./rls.sql", import.meta.url), "utf8"));
 await sql.end();
 console.log(`seeded ${ORGS.length} orgs, ${Object.values(PRODUCTS).flat().length} products; RLS applied`);

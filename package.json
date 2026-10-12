@@ -1,0 +1,18 @@
+{
+  "name": "ecom-agent",
+  "private": true,
+  "workspaces": ["server", "web"],
+  "scripts": {
+    "db:up": "docker compose up -d",
+    "db:push": "npm run -w server db:push",
+    "db:seed": "npm run -w server db:seed",
+    "rag:ingest": "npm run -w server rag:ingest",
+    "dev": "concurrently -n server,web -c blue,green \"npm run -w server dev\" \"npm run -w web dev\"",
+    "check": "npm run -w server check && npm run -w web check",
+    "test": "npm run -w server test",
+    "eval": "npm run -w server eval"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.6"
+  }
+}
